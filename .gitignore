@@ -3,6 +3,7 @@ firmware/**/config.local.h
 references/**/config.local.h
 
 # Local reference clones and experiment artifacts
+docs/
 references/
 results/
 *.log

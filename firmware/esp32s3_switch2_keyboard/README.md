@@ -83,7 +83,43 @@ Supported message types:
 
 Firmware validates protocol version, owner shape, known keyboard codes, known control IDs, stick modes, half-stroke range, and pressed-key shape before relaying UI state. Legacy `keydown`, `keyup`, `touch start`, `touch end`, and `touch cancel` messages are still accepted during migration.
 
-## Private config
+## Install / configure / upload
+
+Arduino sketches are folder-based. Upload this whole folder, not only `esp32s3_switch2_keyboard.ino`:
+
+```text
+firmware/esp32s3_switch2_keyboard/
+```
+
+### 1. Install Arduino CLI and ESP32 core
+
+macOS/Homebrew example:
+
+```bash
+brew install arduino-cli
+arduino-cli version
+```
+
+Fresh Arduino CLI setup:
+
+```bash
+arduino-cli config init
+arduino-cli config add board_manager.additional_urls \
+  https://espressif.github.io/arduino-esp32/package_esp32_index.json
+arduino-cli core update-index
+arduino-cli core install esp32:esp32@3.3.10
+```
+
+### 2. Install libraries
+
+```bash
+arduino-cli lib update-index
+arduino-cli lib install WebSockets ArduinoJson WiFiManager OneButton FastLED M5GFX
+```
+
+`switch_ESP32.cpp` / `switch_ESP32.h` are vendored in this sketch folder, so no separate `switch_ESP32` Arduino library install is required.
+
+### 3. Create private Wi-Fi config
 
 Copy the template and edit locally:
 
@@ -92,9 +128,11 @@ cp firmware/esp32s3_switch2_keyboard/config.local.example.h \
    firmware/esp32s3_switch2_keyboard/config.local.h
 ```
 
-Then set:
+For home Wi-Fi mode:
 
 ```cpp
+#pragma once
+
 #define NK_WIFI_MODE NK_WIFI_MODE_HOME
 #define NK_WIFI_SSID "YOUR_WIFI_SSID"
 #define NK_WIFI_PASS "YOUR_WIFI_PASSWORD"
@@ -102,7 +140,7 @@ Then set:
 
 `config.local.h` is ignored by git and must not be committed.
 
-## Optional direct AP mode
+### 4. Optional direct AP mode
 
 Direct AP mode is scaffolded but not the default:
 
@@ -114,23 +152,87 @@ Direct AP mode is scaffolded but not the default:
 
 In AP mode your laptop/phone must join the ESP32 Wi-Fi network, so Wi-Fi Internet may disconnect unless you have Ethernet or another network path.
 
-## Arduino CLI build/upload
+### 5. Find the upload port
 
-Install dependencies first:
+Connect the board and inspect serial ports:
 
 ```bash
-arduino-cli core install esp32:esp32@3.3.10
-arduino-cli lib install WebSockets ArduinoJson WiFiManager OneButton FastLED M5GFX
+arduino-cli board list
+ls /dev/cu.*
 ```
 
-Compile/upload for ESP32-S3 N16R8 DevKit-style board:
+Common macOS examples:
+
+```text
+/dev/cu.usbserial-0001      # UART/programming bridge on many dual-USB boards
+/dev/cu.usbmodemXXXXXXXX    # native USB CDC on some boards/modes
+```
+
+Use the actual port in the upload command.
+
+### 6. Compile/upload
+
+Tested ESP32-S3 N16R8 DevKit-style FQBN:
 
 ```bash
 FQBN='esp32:esp32:esp32s3:USBMode=default,CDCOnBoot=default,UploadMode=default,FlashSize=16M,PartitionScheme=app3M_fat9M_16MB,PSRAM=opi'
 
 arduino-cli compile --clean --fqbn "$FQBN" firmware/esp32s3_switch2_keyboard
-arduino-cli upload -p /dev/cu.usbserial-0001 --fqbn "$FQBN" firmware/esp32s3_switch2_keyboard
+
+arduino-cli upload \
+  -p /dev/cu.usbserial-0001 \
+  --fqbn "$FQBN" \
+  firmware/esp32s3_switch2_keyboard
 ```
+
+For different ESP32-S3 boards, adjust the board target, flash size, PSRAM mode, and upload port as needed. Native USB must still be available for the Switch-side HID connection.
+
+### 7. Read the ESP32 address
+
+Open the serial monitor after upload:
+
+```bash
+arduino-cli monitor -p /dev/cu.usbserial-0001 -c baudrate=115200
+```
+
+Look for:
+
+```text
+Connect to http://nsgamepad.local or http://192.168.x.x
+```
+
+Open that IP in the browser. Use the IP address directly if `nsgamepad.local` does not resolve on your network.
+
+### 8. Connect to Switch 2
+
+1. Connect the ESP32-S3 native USB port to the Nintendo Switch 2 dock.
+2. Wake the Switch 2 normally. Sleep wake is not a supported feature of this generic USB HID bridge.
+3. Open `http://192.168.x.x/` in a browser on the same Wi-Fi.
+4. Verify `WS open` in the UI.
+5. Test input in a game or the Switch controller test screen.
+
+Dual-USB board note: uploading through the UART port does not guarantee the Switch sees the controller. The dock must be connected to the board's native USB device port.
+
+### 9. OBS overlay
+
+Add an OBS Browser Source using:
+
+```text
+http://192.168.x.x/?overlay=1
+```
+
+Keep the normal control page open separately for input. The overlay is display-only.
+
+### 10. Publish safety check
+
+Before committing/pushing:
+
+```bash
+git status --short
+git check-ignore -v firmware/esp32s3_switch2_keyboard/config.local.h
+```
+
+`config.local.h` should be ignored.
 
 ## Latency notes
 

@@ -191,7 +191,7 @@ const DEFAULT_STATE = {
   modes: { left:'full', right:'full' },
   pressed: {}
 };
-let state = loadState();
+let state = isOverlay ? normalizeState({keymap:{}, settings:DEFAULT_STATE.settings, modes:DEFAULT_STATE.modes, pressed:{}}) : loadState();
 let selectedCode = 'KeyW';
 let websock = null;
 let connected = false;
@@ -234,7 +234,7 @@ function stickValue(control, normalizeDiagonal){ if (!control || control.kind !=
 function inputRepeatMs(){ const repeat = Number(state.settings.repeatMs); return INPUT_REPEAT_OPTIONS.includes(repeat) ? repeat : DEFAULT_INPUT_REPEAT_MS; }
 function repeatLabel(){ const repeat = inputRepeatMs(); return repeat ? repeat + 'ms latest-state' : 'change only'; }
 function snapshot(){ return {v:PROTOCOL_VERSION, type:'state_snapshot', owner:SESSION_ID, keymap:state.keymap, settings:state.settings, modes:state.modes, pressed:state.pressed, ts:Date.now()}; }
-function statePatch(reason){ const msg = {v:PROTOCOL_VERSION, type:'state_patch', owner:SESSION_ID, reason, pressed:state.pressed, ts:Date.now()}; if (reason !== 'press' && reason !== 'release' && reason !== 'release-all') { msg.keymap = state.keymap; msg.settings = state.settings; msg.modes = state.modes; } return msg; }
+function statePatch(reason){ const msg = {v:PROTOCOL_VERSION, type:'state_patch', owner:SESSION_ID, reason, pressed:state.pressed, keymap:state.keymap, settings:state.settings, modes:state.modes, ts:Date.now()}; return msg; }
 function activeControls(){ const raw = []; const halfAxes = {left:new Set(), right:new Set()}; Object.keys(state.pressed).forEach(id => { const code = id.startsWith('key:') ? id.slice(4) : ''; const control = controlForKey(code); if (!control) return; raw.push(control); if (control.kind === 'axis' && state.modes[control.stick] === 'half') halfAxes[control.stick].add(control.axis); }); const byControl = new Map(); raw.forEach(control => { const normalizeDiagonal = control.kind === 'axis' && state.modes[control.stick] === 'half' && halfAxes[control.stick].has('x') && halfAxes[control.stick].has('y'); const item = {control:control.code, id:control.id}; const value = stickValue(control, normalizeDiagonal); if (value !== undefined) item.value = value; byControl.set(control.id, item); }); return Array.from(byControl.values()); }
 function controlStateMsg(reason, forceAck){ const seq = ++inputSeq; const sentAt = performance.now(); const now = performance.now(); const wantsAck = !!forceAck || now - lastAckRequestAt >= 1000; const msg = {v:PROTOCOL_VERSION, type:'control_state', owner:SESSION_ID, seq, reason:reason || 'state', controls:activeControls(), ts:sentAt}; if (wantsAck) { msg.ack = true; lastAckRequestAt = now; pendingInputs.set(seq, {t:sentAt, action:msg.reason, id:'state'}); } return msg; }
 function wsSend(obj){ const isInput = obj && (obj.type === 'input' || obj.type === 'control_state'); if (!connected || !websock || websock.readyState !== WebSocket.OPEN) { if (isInput) { inputDropCount++; if (obj.ack) pendingInputs.delete(obj.seq); logEvent('drop', (obj.reason || obj.action || obj.type) + ' · ws closed', 'bad'); } return false; } if (websock.bufferedAmount > MAX_BUFFERED_AMOUNT) { if (isInput) { inputDropCount++; if (obj.ack) pendingInputs.delete(obj.seq); } logEvent('drop', (obj.type || 'message') + ' · buffer ' + websock.bufferedAmount, 'warn'); updateTelemetry(); return false; } websock.send(JSON.stringify(obj)); if (isInput) inputSentCount++; updateTelemetry(); return true; }
@@ -288,6 +288,7 @@ function bindEvents(){ document.addEventListener('keydown', event => handleContr
   const rel = document.getElementById('releaseAllBtn'); if (rel) rel.onclick = () => releaseAll('manual'); const dbg = document.getElementById('debugLogBtn'); if (dbg) dbg.onclick = () => { debugLogEnabled = !debugLogEnabled; dbg.textContent = debugLogEnabled ? 'Debug log ON' : 'Debug log OFF'; logEvent('debug', debugLogEnabled ? 'enabled' : 'disabled', 'warn'); renderEventLog(); }; const elog = document.getElementById('exportLogBtn'); if (elog) elog.onclick = exportEventLog; const clog = document.getElementById('clearLogBtn'); if (clog) clog.onclick = () => resetDiagnostics('manual clear');
 }
 setInterval(() => { if (connected) wsSend({v:PROTOCOL_VERSION, type:'ping', t:performance.now()}); updateTelemetry(); }, 1000);
+setInterval(() => { if (!isOverlay && connected) publishSnapshot('snapshot'); }, 3000);
 bindEvents(); renderAll(); connect();
 })();
 </script>

@@ -112,6 +112,16 @@ void setup_display() {
 
 /* USB Gamepad */
 static bool dpad_up, dpad_down, dpad_left, dpad_right;
+static String latestUiStateJson;
+static String activeUiOwner;
+
+static uint8_t clamp_axis_value(const int value) {
+  if (value < 0) return 0;
+  if (value > 255) return 255;
+  return (uint8_t)value;
+}
+
+void control_down_value(const int control, const int value);
 
 void control_down(const int control) {
   if (control <= NSButton_Reserved2) {
@@ -171,6 +181,38 @@ void control_down(const int control) {
   }
 }
 
+void control_down_value(const int control, const int value) {
+  if (value < 0) {
+    control_down(control);
+    return;
+  }
+  const uint8_t axis = clamp_axis_value(value);
+  switch (control) {
+    case NSLeftStick_Up_Lock:
+    case NSLeftStick_Up_Lock_Walk:
+    case NSLeftStick_Up_Walk:
+    case NSLeftStick_Up:
+    case NSLeftStick_Down:
+      Gamepad.leftYAxis(axis);
+      break;
+    case NSLeftStick_Left:
+    case NSLeftStick_Right:
+      Gamepad.leftXAxis(axis);
+      break;
+    case NSRightStick_Up:
+    case NSRightStick_Down:
+      Gamepad.rightYAxis(axis);
+      break;
+    case NSRightStick_Left:
+    case NSRightStick_Right:
+      Gamepad.rightXAxis(axis);
+      break;
+    default:
+      control_down(control);
+      break;
+  }
+}
+
 void control_up(const int control) {
   if (control <= NSButton_Reserved2) {
     Gamepad.release(control);
@@ -225,6 +267,210 @@ void control_up(const int control) {
 /* WiFiManager, global */
 WiFiManager wm;
 
+void send_latest_state_to(const uint8_t client) {
+  if (latestUiStateJson.length() > 0) {
+    webSocket.sendTXT(client, latestUiStateJson);
+  }
+}
+
+String payload_to_string(const uint8_t *payload, const size_t length) {
+  String message;
+  message.reserve(length + 1);
+  for (size_t i = 0; i < length; i++) {
+    message += (char)payload[i];
+  }
+  return message;
+}
+
+static const size_t MAX_RELAY_STATE_BYTES = 4096;
+
+static const char* ALLOWED_KEY_CODES[] = {
+  "Escape", "Digit1", "Digit2", "Digit3", "Digit4", "Digit5", "Digit6", "Digit7", "Digit8", "Digit9", "Digit0", "Minus", "Equal", "Backspace",
+  "Tab", "KeyQ", "KeyW", "KeyE", "KeyR", "KeyT", "KeyY", "KeyU", "KeyI", "KeyO", "KeyP", "BracketLeft", "BracketRight", "Backslash",
+  "CapsLock", "KeyA", "KeyS", "KeyD", "KeyF", "KeyG", "KeyH", "KeyJ", "KeyK", "KeyL", "Semicolon", "Quote", "Enter",
+  "ShiftLeft", "KeyZ", "KeyX", "KeyC", "KeyV", "KeyB", "KeyN", "KeyM", "Comma", "Period", "Slash", "ShiftRight",
+  "ControlLeft", "MetaLeft", "AltLeft", "Space", "AltRight", "MetaRight", "ArrowLeft", "ArrowUp", "ArrowDown", "ArrowRight"
+};
+
+static const char* ALLOWED_CONTROL_IDS[] = {
+  "Y", "B", "A", "X", "L", "R", "ZL", "ZR", "Minus", "Plus", "LSB", "RSB", "Home", "Capture",
+  "DPadUp", "DPadDown", "DPadLeft", "DPadRight",
+  "LeftStickUp", "LeftStickDown", "LeftStickLeft", "LeftStickRight",
+  "RightStickUp", "RightStickDown", "RightStickLeft", "RightStickRight"
+};
+
+bool string_in_list(const char* value, const char* const* list, const size_t count) {
+  if (!value || !value[0]) return false;
+  for (size_t i = 0; i < count; i++) {
+    if (strcmp(value, list[i]) == 0) return true;
+  }
+  return false;
+}
+
+bool is_allowed_key_code(const char* value) {
+  return string_in_list(value, ALLOWED_KEY_CODES, sizeof(ALLOWED_KEY_CODES) / sizeof(ALLOWED_KEY_CODES[0]));
+}
+
+bool is_allowed_control_id(const char* value) {
+  return string_in_list(value, ALLOWED_CONTROL_IDS, sizeof(ALLOWED_CONTROL_IDS) / sizeof(ALLOWED_CONTROL_IDS[0]));
+}
+
+bool is_allowed_mode(const char* value) {
+  return strcmp(value, "full") == 0 || strcmp(value, "half") == 0;
+}
+
+bool validate_keymap(JsonVariantConst keymap) {
+  if (keymap.isNull()) return true;
+  if (!keymap.is<JsonObjectConst>()) return false;
+  JsonObjectConst obj = keymap.as<JsonObjectConst>();
+  for (JsonPairConst kv : obj) {
+    const char* key = kv.key().c_str();
+    const char* control = kv.value() | "";
+    if (!is_allowed_key_code(key) || !is_allowed_control_id(control)) return false;
+  }
+  return true;
+}
+
+bool validate_settings(JsonVariantConst settings) {
+  if (settings.isNull()) return true;
+  if (!settings.is<JsonObjectConst>()) return false;
+  JsonObjectConst obj = settings.as<JsonObjectConst>();
+  if (obj["halfPercent"].is<int>()) {
+    const int half = obj["halfPercent"].as<int>();
+    if (half < 5 || half > 95) return false;
+  }
+  if (!obj["leftToggleKey"].isNull() && !is_allowed_key_code(obj["leftToggleKey"] | "")) return false;
+  if (!obj["rightToggleKey"].isNull() && !is_allowed_key_code(obj["rightToggleKey"] | "")) return false;
+  return true;
+}
+
+bool validate_modes(JsonVariantConst modes) {
+  if (modes.isNull()) return true;
+  if (!modes.is<JsonObjectConst>()) return false;
+  JsonObjectConst obj = modes.as<JsonObjectConst>();
+  if (!obj["left"].isNull() && !is_allowed_mode(obj["left"] | "")) return false;
+  if (!obj["right"].isNull() && !is_allowed_mode(obj["right"] | "")) return false;
+  return true;
+}
+
+bool validate_pressed(JsonVariantConst pressed) {
+  if (pressed.isNull()) return true;
+  if (!pressed.is<JsonObjectConst>()) return false;
+  JsonObjectConst obj = pressed.as<JsonObjectConst>();
+  for (JsonPairConst kv : obj) {
+    const char* id = kv.key().c_str();
+    if (strncmp(id, "key:", 4) != 0) return false;
+    if (!is_allowed_key_code(id + 4)) return false;
+    if (!kv.value().is<bool>()) return false;
+  }
+  return true;
+}
+
+bool is_valid_owner(const char* owner) {
+  if (!owner) return false;
+  const size_t len = strlen(owner);
+  if (len < 4 || len > 64) return false;
+  for (size_t i = 0; i < len; i++) {
+    const char ch = owner[i];
+    const bool ok = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '_';
+    if (!ok) return false;
+  }
+  return true;
+}
+
+bool validate_ui_state_message(JsonDocument &doc, String &ownerOut) {
+  const int version = doc["v"] | 0;
+  const char* type = doc["type"] | "";
+  if (version != 1) return false;
+  if (strcmp(type, "state_snapshot") != 0 && strcmp(type, "state_patch") != 0) return false;
+  const char* owner = doc["owner"] | "";
+  if (!is_valid_owner(owner)) return false;
+  ownerOut = owner;
+  if (strcmp(type, "state_patch") == 0 && activeUiOwner.length() > 0 && activeUiOwner != ownerOut) return false;
+  return validate_keymap(doc["keymap"]) &&
+         validate_settings(doc["settings"]) &&
+         validate_modes(doc["modes"]) &&
+         validate_pressed(doc["pressed"]);
+}
+
+void relay_state_message(const String &message) {
+  latestUiStateJson = message;
+  webSocket.broadcastTXT(message.c_str(), message.length());
+}
+
+void handle_versioned_message(const uint8_t client, JsonDocument &doc) {
+  const int version = doc["v"] | 0;
+  if (version != 1) return;
+  const char* type = doc["type"] | "";
+  if (strcmp(type, "input") == 0) {
+    const char* action = doc["action"] | "";
+    const int control = doc["control"] | -1;
+    const int value = doc["value"] | -1;
+    if (control < 0) return;
+    if (strcmp(action, "up") == 0) {
+      control_up(control);
+    } else {
+      control_down_value(control, value);
+    }
+    Gamepad.write();
+  }
+  else if (strcmp(type, "state_request") == 0) {
+    send_latest_state_to(client);
+  }
+  else if (strcmp(type, "ping") == 0) {
+    StaticJsonDocument<96> reply;
+    reply["v"] = 1;
+    reply["type"] = "pong";
+    reply["t"] = doc["t"] | 0.0;
+    String json;
+    serializeJson(reply, json);
+    webSocket.sendTXT(client, json);
+  }
+}
+
+void handle_legacy_message(JsonDocument &doc) {
+  const char* event = doc["event"] | "";
+  if (strcmp(event, "keyup") == 0) {
+    const int control = doc["code"] | -1;
+    if (control >= 0) control_up(control);
+  }
+  else if (strcmp(event, "keydown") == 0) {
+    const int control = doc["code"] | -1;
+    if (control >= 0) control_down(control);
+  }
+  else {
+    int row = doc["row"] | 0;
+    if (row < 0) {
+      DBG_printf("row negative %d\n", row);
+      row = 0;
+    }
+    if (row >= MAX_ROWS) {
+      DBG_printf("row too high %d\n", row);
+      row = MAX_ROWS - 1;
+    }
+
+    int col = doc["col"] | 0;
+    if (col < 0) {
+      DBG_printf("col negative %d\n", col);
+      col = 0;
+    }
+    if (col >= MAX_COLS) {
+      DBG_printf("col too high %d\n", col);
+      col = MAX_COLS - 1;
+    }
+
+    const int control = Gamepad_Cells[row][col].gamepad_control;
+
+    if (strcmp(event, "touch start") == 0) {
+      control_down(control);
+    }
+    else if (strcmp(event, "touch end") == 0 || strcmp(event, "touch cancel") == 0) {
+      control_up(control);
+    }
+  }
+  Gamepad.write();
+}
+
 void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length)
 {
   switch(type) {
@@ -239,9 +485,7 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
 #if DIAG_VERBOSE_WS
         DBG_printf("[%u] Connected from %d.%d.%d.%d url: %s\r\n", num, ip[0], ip[1], ip[2], ip[3], payload);
 #endif
-
-        // Send touch grid in JSON format
-        Json_touch_grid(num, Gamepad_Page);
+        send_latest_state_to(num);
       }
       break;
     case WStype_TEXT:
@@ -249,65 +493,46 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length
 #if DIAG_VERBOSE_WS
         DBG_printf("[%u] get Text: [%d] %s \r\n", num, length, payload);
 #endif
+        if (length > MAX_RELAY_STATE_BYTES) {
+          DBG_println(F("WebSocket JSON message too large"));
+          return;
+        }
 
-        StaticJsonDocument<96> doc;
-        DeserializationError error = deserializeJson(doc, payload);
+        String message = payload_to_string(payload, length);
+        JsonDocument doc;
+        DeserializationError error = deserializeJson(doc, message);
 
         if (error) {
           DBG_print(F("deserializeJson() failed: "));
           DBG_println(error.f_str());
           return;
         }
-        const char* event = doc["event"];
-        if (strcmp(event, "keyup") == 0) {
-          const int control = doc["code"];
-          control_up(control);
+
+        const char* messageType = doc["type"] | "";
+        if (strcmp(messageType, "state_snapshot") == 0 || strcmp(messageType, "state_patch") == 0) {
+          String owner;
+          if (validate_ui_state_message(doc, owner)) {
+            if (strcmp(messageType, "state_snapshot") == 0) activeUiOwner = owner;
+            relay_state_message(message);
+          }
+          else {
+            DBG_println(F("Rejected invalid UI state message"));
+          }
+          return;
         }
-        else if (strcmp(event, "keydown") == 0) {
-          const int control = doc["code"];
-          control_down(control);
+
+        if (doc.containsKey("type")) {
+          handle_versioned_message(num, doc);
         }
         else {
-          int row = doc["row"];
-          if (row < 0) {
-            DBG_printf("row negative %d\n", row);
-            row = 0;
-          }
-          if (row >= MAX_ROWS) {
-            DBG_printf("row too high %d\n", row);
-            row = MAX_ROWS - 1;
-          }
-
-          int col = doc["col"];
-          if (col < 0) {
-            DBG_printf("col negative %d\n", col);
-            col = 0;
-          }
-          if (col >= MAX_COLS) {
-            DBG_printf("col too high %d\n", col);
-            col = MAX_COLS - 1;
-          }
-
-          const int control = Gamepad_Cells[row][col].gamepad_control;
-
-          if (strcmp(event, "touch start") == 0) {
-            control_down(control);
-          }
-          else if (strcmp(event, "touch end") == 0) {
-            control_up(control);
-          }
+          handle_legacy_message(doc);
         }
-        Gamepad.write();
       }
       break;
     case WStype_BIN:
 #if DIAG_VERBOSE_WS
       DBG_printf("[%u] get binary length: %u\r\n", num, length);
 #endif
-      //      hexdump(payload, length);
-
-      // echo data back to browser
-      // webSocket.sendBIN(num, payload, length);
       break;
     default:
 #if DIAG_VERBOSE_WS

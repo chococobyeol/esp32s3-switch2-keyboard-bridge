@@ -2,7 +2,6 @@
 
 This firmware turns an ESP32-S3 DevKit-style board into a Nintendo Switch 2 USB HID gamepad controlled from a browser over WebSocket.
 
-
 ## Compatibility
 
 This firmware is currently tested only with Nintendo Switch 2. Nintendo Switch 1 compatibility is not tested and is not guaranteed.
@@ -11,12 +10,68 @@ This firmware is currently tested only with Nintendo Switch 2. Nintendo Switch 1
 
 - ESP32-S3 joins your home Wi-Fi.
 - Browser opens the ESP32 web UI.
-- Browser sends key/button events over WebSocket.
+- Browser sends normalized input events over WebSocket.
 - ESP32-S3 sends USB HID reports to the Switch 2 dock.
 
 ```text
 Mac/PC/phone browser -> home Wi-Fi router -> ESP32-S3 -> USB HID -> Switch 2 dock
 ```
+
+## Browser UI
+
+Open the IP printed on serial output, usually like:
+
+```bash
+open http://192.168.x.x/
+```
+
+Expected root-page behavior:
+
+- A keyboard-oriented control surface renders instead of the old touch grid.
+- The UI shows WebSocket state, reconnect count, buffered bytes, last input, and RTT.
+- Click a keyboard key to assign or clear a Switch control.
+- Keymap/settings are cached in browser `localStorage` and can be exported/imported as JSON.
+- Pressed keys are highlighted in the control page.
+
+## OBS overlay mode
+
+Open the overlay URL:
+
+```text
+http://192.168.x.x/?overlay=1
+```
+
+The overlay page is transparent and mapped-only for OBS Browser Source. It is display-only: keyboard events are ignored in overlay mode. A normal control page publishes live state snapshots/patches, and the firmware relays the latest state to overlay clients. The current MVP assumes one active control page as the UI owner; the most recent valid `state_snapshot` claims ownership, and later `state_patch` messages must come from that owner.
+
+## Stick sensitivity
+
+The UI supports independent persistent full/half modes for left and right sticks.
+
+Defaults:
+
+- left-stick mode toggle: `ControlLeft`
+- right-stick mode toggle: `AltLeft`
+- half-stroke: 50%
+
+Full mode sends full stick deflection. Half mode sends the configured half-stroke axis value. The toggle keys and half percentage are editable in the browser UI.
+
+## WebSocket protocol
+
+The firmware accepts a versioned JSON envelope:
+
+```json
+{ "v": 1, "type": "input", "action": "down", "control": 20, "id": "LeftStickUp", "value": 0 }
+```
+
+Supported message types:
+
+- `input` — normalized HID press/release event.
+- `state_snapshot` — full browser UI state for overlay sync; includes an `owner` session id.
+- `state_patch` — visible-state update for overlay sync; must match the active `owner`.
+- `state_request` — overlay asks firmware to resend latest state.
+- `ping` / `pong` — browser RTT telemetry.
+
+Firmware validates protocol version, owner shape, known keyboard codes, known control IDs, stick modes, half-stroke range, and pressed-key shape before relaying UI state. Legacy `keydown`, `keyup`, `touch start`, `touch end`, and `touch cancel` messages are still accepted during migration.
 
 ## Private config
 
@@ -66,20 +121,6 @@ FQBN='esp32:esp32:esp32s3:USBMode=default,CDCOnBoot=default,UploadMode=default,F
 arduino-cli compile --clean --fqbn "$FQBN" firmware/esp32s3_switch2_keyboard
 arduino-cli upload -p /dev/cu.usbserial-0001 --fqbn "$FQBN" firmware/esp32s3_switch2_keyboard
 ```
-
-## Browser test
-
-After boot, open the IP printed on serial output, usually like:
-
-```bash
-open http://192.168.x.x/
-```
-
-Expected:
-
-- Touch Gamepad grid renders.
-- DevTools shows `websock onopen`.
-- Keyboard WASD/arrow keys and grid buttons send inputs.
 
 ## Stability notes
 

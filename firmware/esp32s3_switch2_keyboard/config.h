@@ -52,3 +52,9 @@
 #ifndef NK_VERBOSE_WS
 #define NK_VERBOSE_WS 0
 #endif
+
+// Disable station-mode Wi-Fi sleep for lower input latency.
+// This increases power use slightly, but the bridge is normally USB-powered.
+#ifndef NK_WIFI_DISABLE_SLEEP
+#define NK_WIFI_DISABLE_SLEEP 1
+#endif

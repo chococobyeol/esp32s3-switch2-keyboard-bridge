@@ -54,6 +54,7 @@ Defaults:
 - half-stroke: 50%
 - button hold: 120ms
 - input state interval: 20ms
+- station-mode Wi-Fi sleep: disabled by default for lower input latency
 
 Full mode sends full stick deflection. Half mode sends the configured half-stroke axis value. The toggle keys and half percentage are editable in the browser UI.
 
@@ -130,6 +131,10 @@ FQBN='esp32:esp32:esp32s3:USBMode=default,CDCOnBoot=default,UploadMode=default,F
 arduino-cli compile --clean --fqbn "$FQBN" firmware/esp32s3_switch2_keyboard
 arduino-cli upload -p /dev/cu.usbserial-0001 --fqbn "$FQBN" firmware/esp32s3_switch2_keyboard
 ```
+
+## Latency notes
+
+In home Wi-Fi mode the firmware disables ESP32 station-mode Wi-Fi sleep (`NK_WIFI_DISABLE_SLEEP=1`) before connecting. This reduces WebSocket input latency spikes that can otherwise feel like 100ms+ controller lag. The bridge is normally USB-powered, so the extra power draw is acceptable for this use case.
 
 ## Stability notes
 

@@ -812,6 +812,9 @@ void setup()
   DBG_print(F("[switch2-keyboard] connecting to Wi-Fi SSID: "));
   DBG_println(F(NK_WIFI_SSID));
   WiFi.mode(WIFI_STA);
+#if NK_WIFI_DISABLE_SLEEP
+  WiFi.setSleep(false);
+#endif
   WiFi.begin(NK_WIFI_SSID, NK_WIFI_PASS);
   bool res = false;
   for (uint8_t i = 0; i < NK_WIFI_CONNECT_ATTEMPTS; i++) {

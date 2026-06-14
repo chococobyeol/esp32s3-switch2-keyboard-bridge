@@ -21,6 +21,7 @@ Validated on a generic ESP32-S3 DevKitC-1-compatible N16R8 dual USB-C board:
 - Browser opens the ESP32-hosted keyboard control UI.
 - WebSocket delivers normalized input events and live UI state.
 - ESP32-S3 sends USB HID gamepad reports to a Nintendo Switch 2 dock.
+- ESP32 station-mode Wi-Fi sleep is disabled in home Wi-Fi mode to reduce input latency spikes.
 - A separate `?overlay=1` page renders a transparent mapped-key overlay for OBS Browser Source.
 
 ## UI workflow

@@ -52,8 +52,16 @@ Defaults:
 - left-stick mode toggle: `ControlLeft`
 - right-stick mode toggle: `AltLeft`
 - half-stroke: 50%
+- button hold: 120ms
+- input state interval: 20ms
 
 Full mode sends full stick deflection. Half mode sends the configured half-stroke axis value. The toggle keys and half percentage are editable in the browser UI.
+
+In half mode, diagonal stick input is normalized by `1/sqrt(2)` when both axes of the same stick are active. For example, with 70% half stroke, a single-axis input sends about 70% deflection, while a diagonal sends about 49% on X and 49% on Y so the radial stick magnitude remains about 70% instead of becoming nearly full stroke.
+
+## Input state tuning
+
+The browser control page sends latest-state frames instead of queueing every repeated `down` event. A key change is sent immediately, then the currently pressed controls are refreshed at the configured interval: `20ms` (default), `40ms`, `60ms`, `80ms`, `100ms`, or `off` for change-only mode. Each state frame replaces the full HID state on the ESP32-S3, so stale queued direction events are not intentionally replayed. Exported logs can compare sampled `Ack avg/max`, `Pending ack`, and `Input sent/drop`; actual game/OBS visual latency still requires video/frame-based checking.
 
 ## WebSocket protocol
 
@@ -65,7 +73,8 @@ The firmware accepts a versioned JSON envelope:
 
 Supported message types:
 
-- `input` — normalized HID press/release event.
+- `input` — legacy normalized HID press/release event.
+- `control_state` — current full input state; firmware resets HID controls and applies this latest state in one `Gamepad.write()`.
 - `state_snapshot` — full browser UI state for overlay sync; includes an `owner` session id.
 - `state_patch` — visible-state update for overlay sync; must match the active `owner`.
 - `state_request` — overlay asks firmware to resend latest state.
@@ -129,4 +138,4 @@ This firmware intentionally disables:
 - M5Stack AtomS3 display/LED/button initialization (`NK_DISABLE_M5_UI=1`) because the tested board is a generic ESP32-S3 DevKit.
 - Periodic `Gamepad.loop()` reports (`NK_DISABLE_GAMEPAD_LOOP=1`) because periodic HID reports destabilized HTTP/WebSocket on this board/core combination.
 
-Instead, the web UI repeats active inputs every 20ms and keeps short clicks pressed for at least 90ms.
+Instead, the web UI sends latest-state frames at the configured interval (20ms by default) and keeps short clicks pressed for at least 120ms. This avoids replaying a long backlog of stale direction events.

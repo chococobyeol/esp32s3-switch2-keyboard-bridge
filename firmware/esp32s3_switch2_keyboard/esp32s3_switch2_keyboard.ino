@@ -114,6 +114,8 @@ void setup_display() {
 static bool dpad_up, dpad_down, dpad_left, dpad_right;
 static String latestUiStateJson;
 static String activeUiOwner;
+static uint32_t latestControlStateSeq = 0;
+static String activeControlOwner;
 
 static uint8_t clamp_axis_value(const int value) {
   if (value < 0) return 0;
@@ -122,6 +124,7 @@ static uint8_t clamp_axis_value(const int value) {
 }
 
 void control_down_value(const int control, const int value);
+void release_all_controls();
 
 void control_down(const int control) {
   if (control <= NSButton_Reserved2) {
@@ -260,6 +263,21 @@ void control_up(const int control) {
     default:
       break;
   }
+}
+
+void release_all_controls() {
+  for (int button = 0; button <= NSButton_Reserved2; button++) {
+    Gamepad.release(button);
+  }
+  dpad_up = false;
+  dpad_down = false;
+  dpad_left = false;
+  dpad_right = false;
+  Gamepad.dPad(false, false, false, false);
+  Gamepad.leftXAxis(128);
+  Gamepad.leftYAxis(128);
+  Gamepad.rightXAxis(128);
+  Gamepad.rightYAxis(128);
 }
 
 /* WiFi Network */
@@ -406,13 +424,84 @@ void handle_versioned_message(const uint8_t client, JsonDocument &doc) {
     const char* action = doc["action"] | "";
     const int control = doc["control"] | -1;
     const int value = doc["value"] | -1;
+    const uint32_t seq = doc["seq"] | 0;
     if (control < 0) return;
+    const uint32_t recvMs = millis();
     if (strcmp(action, "up") == 0) {
       control_up(control);
     } else {
       control_down_value(control, value);
     }
     Gamepad.write();
+    StaticJsonDocument<160> ack;
+    ack["v"] = 1;
+    ack["type"] = "input_ack";
+    ack["seq"] = seq;
+    ack["control"] = control;
+    ack["action"] = action;
+    ack["recvMs"] = recvMs;
+    ack["writeMs"] = millis();
+    String json;
+    serializeJson(ack, json);
+    webSocket.sendTXT(client, json);
+  }
+  else if (strcmp(type, "control_state") == 0) {
+    const uint32_t seq = doc["seq"] | 0;
+    const bool wantsAck = doc["ack"] | false;
+    const char* reason = doc["reason"] | "state";
+    const char* owner = doc["owner"] | "";
+    JsonArrayConst controls = doc["controls"].as<JsonArrayConst>();
+    if (controls.isNull()) return;
+    if (is_valid_owner(owner) && activeControlOwner != owner) {
+      activeControlOwner = owner;
+      latestControlStateSeq = 0;
+      release_all_controls();
+      Gamepad.write();
+    }
+
+    if (seq != 0 && latestControlStateSeq != 0 && seq < latestControlStateSeq) {
+      if (wantsAck) {
+        StaticJsonDocument<160> ack;
+        ack["v"] = 1;
+        ack["type"] = "input_ack";
+        ack["seq"] = seq;
+        ack["control"] = -1;
+        ack["action"] = "stale";
+        ack["recvMs"] = millis();
+        ack["writeMs"] = millis();
+        String json;
+        serializeJson(ack, json);
+        webSocket.sendTXT(client, json);
+      }
+      return;
+    }
+    latestControlStateSeq = seq;
+
+    const uint32_t recvMs = millis();
+    release_all_controls();
+    size_t applied = 0;
+    for (JsonObjectConst item : controls) {
+      if (applied++ >= 28) break;
+      const int control = item["control"] | -1;
+      const int value = item["value"] | -1;
+      if (control < 0 || control > NSRightStick_Right) continue;
+      control_down_value(control, value);
+    }
+    Gamepad.write();
+
+    if (wantsAck) {
+      StaticJsonDocument<160> ack;
+      ack["v"] = 1;
+      ack["type"] = "input_ack";
+      ack["seq"] = seq;
+      ack["control"] = -1;
+      ack["action"] = reason;
+      ack["recvMs"] = recvMs;
+      ack["writeMs"] = millis();
+      String json;
+      serializeJson(ack, json);
+      webSocket.sendTXT(client, json);
+    }
   }
   else if (strcmp(type, "state_request") == 0) {
     send_latest_state_to(client);
